@@ -1,0 +1,8 @@
+{
+	"name": "xl",
+	"version": "0.0.1",
+	"description": "Bindings to libxenlight.",
+	"author": "Izaak Schroeder",
+	"engine": "node >= 0.4.10",
+	"main": "build/Release/xl.node"
+}

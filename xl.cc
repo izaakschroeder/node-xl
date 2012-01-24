@@ -51,6 +51,16 @@ extern "C" {
                   String::New("Argument " #I " must be a boolean")));  \
   VAR = args[I]->BooleanValue();
 
+#define OPT_BOOL_ARG(I, VAR, DEFAULT)\
+  bool VAR;\
+  if (args.Length() <= (I)) \
+    VAR = (DEFAULT); \
+  else if (args[I]->IsBoolean()) \
+  	VAR = args[I]->BooleanValue(); \
+  else \
+      return ThrowException(Exception::TypeError( \
+                  String::New("Argument " #I " must be a boolean")));  
+
 
 #define REQ_FN_ARG(I, VAR)                                              \
   v8::Local<v8::Function> VAR;                                                           \
@@ -91,6 +101,33 @@ extern "C" {
                   
 using namespace node;
 using namespace v8;
+
+//xc_hvm_build_target_mem -lxenguest
+//
+
+unsigned long libxl_get_required_shadow_memory(unsigned long maxmem_kb, unsigned int smp_cpus)
+{
+    /* 256 pages (1MB) per vcpu,
+       plus 1 page per MiB of RAM for the P2M map,
+       plus 1 page per MiB of RAM to shadow the resident processes.
+       This is higher than the minimum that Xen would allocate if no value
+       were given (but the Xen minimum is for safety, not performance).
+     */
+    return 4 * (256 * smp_cpus + 2 * (maxmem_kb / 1024));
+}
+
+char *libxl_cpupoolid_to_name(libxl_ctx *ctx, uint32_t poolid)
+{
+    unsigned int len;
+    char path[strlen("/local/pool") + 12];
+    char *s;
+
+    snprintf(path, sizeof(path), "/local/pool/%d/name", poolid);
+    s = (char*)xs_read(ctx->xsh, XBT_NULL, path, &len);
+    if (!s && (poolid == 0))
+        return strdup("Pool-0");
+    return s;
+}
 
 class LibXL : ObjectWrap {
 public:
@@ -137,6 +174,23 @@ public:
 
 	};
 
+	static Handle<Object> domainInfoToObject(const libxl_dominfo& info) {
+		Handle<Object> object = Object::New();
+		object->Set(String::New("domId"), Integer::New(info.domid));
+		object->Set(String::New("running"), Boolean::New(info.running));
+		object->Set(String::New("blocked"), Boolean::New(info.blocked));
+		object->Set(String::New("paused"), Boolean::New(info.paused));
+		object->Set(String::New("shutdown"), Boolean::New(info.shutdown));
+		object->Set(String::New("dying"), Boolean::New(info.dying));
+		object->Set(String::New("shutdownReason"), Integer::New(info.shutdown_reason));
+		object->Set(String::New("currentMemory"), Number::New(info.current_memkb));
+		object->Set(String::New("maximumMemory"), Number::New(info.max_memkb));
+		object->Set(String::New("cpuTime"), Number::New(info.cpu_time));
+		object->Set(String::New("vcpuMaxId"), Integer::New(info.vcpu_max_id));
+		object->Set(String::New("vcpuOnline"), Integer::New(info.vcpu_online));
+		return object;
+	};
+
 	
 	static Handle<Value> domainResume(const Arguments &args) {
 		REQ_INT_ARG(0, id);
@@ -151,7 +205,7 @@ public:
 
 	static Handle<Value> domainDestroy(const Arguments &args) {
 		REQ_INT_ARG(0, id);
-		REQ_BOOL_ARG(1, force);
+		OPT_BOOL_ARG(1, force, false);
 		return Integer::New(libxl_domain_destroy(&context, id, force));
 	};
 
@@ -160,9 +214,51 @@ public:
 		return Integer::New(libxl_domain_pause(&context, id));
 	};
 
+	static Handle<Value> domainInfo(const Arguments &args) {
+		REQ_INT_ARG(0, id);
+		libxl_dominfo info = { 0 };
+		if (0 == libxl_domain_info(&context, &info, id)) {
+			return domainInfoToObject(info);
+		}
+		else {
+			return Null();
+		}
+		return Integer::New(libxl_domain_pause(&context, id));
+	};
+
 	static Handle<Value> domainUnpause(const Arguments &args) {
 		REQ_INT_ARG(0, id);
 		return Integer::New(libxl_domain_unpause(&context, id));
+	}
+
+	static int consoleReady(libxl_ctx *ctx, uint32_t domid, void *priv) {
+		return 0;
+	}
+
+	static Handle<Value> domainCreate(const Arguments& args) {
+		uint32_t id = 0;
+		libxl_domain_config config = { 0 };
+
+		libxl_init_create_info(&config.c_info);
+		config.c_info.name = strdup("test");
+		libxl_uuid_generate(&config.c_info.uuid);
+		config.c_info.poolname = libxl_cpupoolid_to_name(&context, config.c_info.poolid);
+
+
+		libxl_init_build_info(&config.b_info, &config.c_info);
+		config.b_info.shadow_memkb = libxl_get_required_shadow_memory(config.b_info.max_memkb, config.b_info.max_vcpus);
+
+		if (config.c_info.hvm == 1) {
+			libxl_init_dm_info(&config.dm_info, &config.c_info, &config.b_info);
+			config.dm_info.type = config.c_info.hvm ? XENFV : XENPV;
+		}
+
+		if (0 == libxl_domain_create_new(&context, &config, consoleReady, NULL, &id)) {
+			return Integer::New(id);
+		}
+		else {
+			return Null();
+		}
 	}
 
 	/*
@@ -213,27 +309,15 @@ public:
 		return Integer::New(libxl_get_max_cpus(&context));
 	};
 	
+	
+
 	static Handle<Value> domains(Local<String> property, const AccessorInfo& info) {
 		int count = 0;
 		libxl_dominfo* domains;
 		domains = libxl_list_domain(&context, &count);
 		Local<Array> out = Array::New(count);
-		for (int i = 0; i < count; ++i) {
-			Handle<Object> object = Object::New();
-			object->Set(String::New("domId"), Integer::New(domains[i].domid));
-			object->Set(String::New("running"), Boolean::New(domains[i].running));
-			object->Set(String::New("blocked"), Boolean::New(domains[i].blocked));
-			object->Set(String::New("paused"), Boolean::New(domains[i].paused));
-			object->Set(String::New("shutdown"), Boolean::New(domains[i].shutdown));
-			object->Set(String::New("dying"), Boolean::New(domains[i].dying));
-			object->Set(String::New("shutdownReason"), Integer::New(domains[i].shutdown_reason));
-			object->Set(String::New("currentMemory"), Number::New(domains[i].current_memkb));
-			object->Set(String::New("maximumMemory"), Number::New(domains[i].max_memkb));
-			object->Set(String::New("cpuTime"), Number::New(domains[i].cpu_time));
-			object->Set(String::New("vcpuMaxId"), Integer::New(domains[i].vcpu_max_id));
-			object->Set(String::New("vcpuOnline"), Integer::New(domains[i].vcpu_online));
-			out->Set(i, object);
-		}
+		for (int i = 0; i < count; ++i) 
+			out->Set(i, domainInfoToObject(domains[i]));
 		return out;
 	}
 
@@ -280,7 +364,6 @@ extern "C" {
 	static void init (Handle<Object> target)
 	{
 				
-		//http://linux.die.net/man/3/libmagic
 		NODE_DEFINE_CONSTANT(target, XENFV);
 		NODE_DEFINE_CONSTANT(target, XENPV);
 
@@ -344,9 +427,10 @@ extern "C" {
 
 		target->SetAccessor(String::NewSymbol("version"), LibXL::version, NULL, Handle<Value>(), PROHIBITS_OVERWRITING, ReadOnly);
 
-
-		//NODE_SET_METHOD(target, "create", Magic::create);
-		
+		NODE_SET_METHOD(target, "domainInfo", LibXL::domainInfo);
+		NODE_SET_METHOD(target, "domainCreate", LibXL::domainCreate);
+		NODE_SET_METHOD(target, "domainDestroy", LibXL::domainDestroy);
+	
 		LibXL::Init(target);
 	}
 

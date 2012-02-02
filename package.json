@@ -3,6 +3,6 @@
 	"version": "0.0.1",
 	"description": "Bindings to libxenlight.",
 	"author": "Izaak Schroeder",
-	"engine": "node >= 0.4.10",
+	"engine": "node >= 0.6.0",
 	"main": "build/Release/xl.node"
 }

@@ -18,6 +18,12 @@ extern "C" {
     return ThrowException(Exception::TypeError(                         \
                              String::New("Expected " #N "arguments"))); 
 
+#define REQ_OBJ_ARG(I, VAR) \
+if (args.Length() <= (I) || !args[I]->IsObject())                     \
+    return ThrowException(Exception::TypeError(                         \
+                  String::New("Argument " #I " must be an object")));   \
+  Local<Object> VAR = Local<Object>::Cast(args[I]);                   
+
 #define OPT_STR_ARG(I, VAR, DEFAULT)                                    \
   const char* VAR;                                                              \
   if (args.Length() <= (I)) {                                           \
@@ -235,13 +241,40 @@ public:
 		return 0;
 	}
 
+	static void uuidToString(const libxl_uuid& uuid, char* buffer) {
+		const unsigned char *d = (const unsigned char *)&uuid;
+		sprintf(buffer, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+			d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7],
+			d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]
+		);
+	}
+
 	static Handle<Value> domainCreate(const Arguments& args) {
 		uint32_t id = 0;
 		libxl_domain_config config = { 0 };
+		char* name;
+		char uuidBuffer[36];
+		REQ_OBJ_ARG(0, obj);
+
+		Local<String> NAME = String::New("name"), HVM = String::New("hvm");
 
 		libxl_init_create_info(&config.c_info);
-		config.c_info.name = strdup("test");
 		libxl_uuid_generate(&config.c_info.uuid);
+
+		
+		if (!obj->Has(NAME)) {
+			uuidToString(config.c_info.uuid, uuidBuffer);
+			name = uuidBuffer; //FiXME: Make this into a UUID
+		}
+		else {
+			name = *String::Utf8Value(obj->Get(NAME)->ToString());
+		}
+
+
+		config.c_info.name = strdup(name);
+		config.c_info.hvm = obj->Has(HVM) ? obj->Get(HVM)->BooleanValue() : 1;
+
+		
 		config.c_info.poolname = libxl_cpupoolid_to_name(&context, config.c_info.poolid);
 
 

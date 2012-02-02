@@ -22,11 +22,10 @@ console.log(xl.version);
 console.log();
 
 console.log("- Domain Creation -");
-var id = xl.domainCreate({
-	
-});
+var id = xl.domainCreate({ });
 if (id) {
 	console.log("Created domain: "+id);
+	console.log(xl.domainInfo(id));
 	xl.domainDestroy(id);
 	console.log("Destroyed.")
 }

@@ -1,3 +1,7 @@
 = XL =
 
+{{{
+npm install xl
+}}}
+
 Node.JS bindings for libxenlight.
